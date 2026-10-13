@@ -1,0 +1,29 @@
+# PyPI Trusted Publishing —— 免密发布（OIDC）
+#
+# 前提：PyPI 项目 "agentledger"（或 pending publisher）配置了
+#   Owner: Chengyue2025 / Repo: agentledger / Workflow: pypi-publish.yml / Environment: (空)
+# 配好后：push v* tag 或手动 workflow_dispatch 即自动上传 PyPI，全程无 token。
+name: pypi-publish
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # OIDC：PyPI 据此信任本次运行，无需长期 token
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build sdist + wheel
+        run: |
+          python -m pip install --upgrade build
+          python -m build
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
