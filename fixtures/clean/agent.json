@@ -1,0 +1,33 @@
+{
+  "name": "clean-fleet-ops",
+  "version": "2.0.0",
+  "description": "车队调度智能体（合规基线样例）",
+  "human_in_the_loop": true,
+  "action_boundary": {
+    "allowed_actions": ["read_schedule", "suggest_reroute", "notify_driver"],
+    "denied_actions": ["issue_ticket", "charge_customer", "delete_record"]
+  },
+  "data_processing": {
+    "personal_information": ["driver_name", "phone"],
+    "retention_policy": "90d",
+    "pipl_assessment": "DPIA-2026-0042"
+  },
+  "audit_log": {
+    "enabled": true,
+    "retention": "365d",
+    "export_format": "jsonl"
+  },
+  "approval_gate": {
+    "requires_approval": ["issue_ticket"],
+    "payment_limit": 0
+  },
+  "sandbox": "container:read-only-fs,network-egress-allowlist",
+  "model": {
+    "provider": "dashscope",
+    "model": "qwen3-235b-a22b-instruct-2025-07",
+    "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1"
+  },
+  "tool_policy": {
+    "allow": ["read_schedule", "suggest_reroute", "notify_driver"]
+  }
+}

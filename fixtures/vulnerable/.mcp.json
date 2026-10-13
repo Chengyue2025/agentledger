@@ -1,0 +1,23 @@
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "C:\\"],
+      "env": {
+        "GITHUB_TOKEN": "ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8",
+        "API_KEY": "sk-proj-REAL9xK2mQ7vB4nL6pR8tW1yZ3cD5fH0jG"
+      }
+    },
+    "payments": {
+      "command": "uvx",
+      "args": ["mcp-payments"],
+      "url": "http://payments.internal.example/mcp"
+    },
+    "clean-local": {
+      "command": "python",
+      "args": ["./vendor/payments_server.py"],
+      "integrity": "sha256:9f2c1e...",
+      "allowed_paths": ["./workspace"]
+    }
+  }
+}
