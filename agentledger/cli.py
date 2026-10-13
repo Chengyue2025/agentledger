@@ -1,10 +1,11 @@
 """aledger 命令行入口。
 
-    aleder scan <path>          扫描并生成证据包
-    aleder verify               校验账本链完整性
-    aleder history              查看留痕历史
-    aleder rules                列出规则目录与义务映射
-    aleder init-key             生成签署密钥
+    aledger scan <path>          扫描并生成证据包
+    aledger verify               校验账本链完整性
+    aledger history              查看留痕历史
+    aledger rules                列出规则目录与义务映射
+    aledger init-key             生成签署密钥
+    aledger receipt ...          委托收据：签发/验证/撤销（IETF DRP 对齐）
 
 设计原则：默认零依赖、可离线、可复现。
 """
@@ -16,7 +17,7 @@ import json
 import sys
 from pathlib import Path
 
-from . import TOOL_ID, __version__
+from . import TOOL_ID, __version__, receipt
 from .inventory import discover
 from .ledger import Ledger, attest, findings_merkle, generate_key, write_key
 from .mapping import OBLIGATIONS, RULE_OBLIGATIONS
@@ -269,7 +270,105 @@ def build_parser() -> argparse.ArgumentParser:
     k.add_argument("path", nargs="?", default="./.agentledger/attestation.key")
     k.set_defaults(func=cmd_init_key)
 
+    g = sub.add_parser(
+        "gbz185",
+        help="导出 GB/Z 185—2026 智能体注册载荷（含符合度自查）")
+    g.add_argument("path", help="智能体项目目录")
+    g.add_argument("--name", required=True, help="智能体名称")
+    g.add_argument("--operator", default="", help="开发者/部署单位")
+    g.add_argument("--version", default="", help="智能体版本")
+    g.add_argument("--deployment-mode", default="",
+                   help="部署方式：private / saas / hybrid")
+    g.add_argument("--jurisdiction", default="CN")
+    g.add_argument("-o", "--out", default="", help="输出目录（默认 <path>/.agentledger）")
+    g.add_argument("--strict", action="store_true",
+                   help="存在 inferred 级要素时以退出码 1 结束")
+    g.set_defaults(func=cmd_gbz185)
+
+    receipt.register(sub)
+
     return p
+
+
+def cmd_gbz185(args: argparse.Namespace) -> int:
+    """导出 GB/Z 185—2026 注册载荷。
+
+    对应《实施意见》第 4 条：智能体注册平台需支持查询管理
+    「开发者、部署方式、接口协议、合规认证」等信息。
+    """
+    from .gbz185 import (
+        AgentIdentity, RegistrationPayload, capability_from_scan,
+        conformance_report,
+    )
+    from .inventory import discover
+    from .ledger import findings_merkle
+
+    target = Path(args.path).resolve()
+    if not target.exists():
+        print(f"[x] 路径不存在: {target}", file=sys.stderr)
+        return 2
+
+    cov = discover(target)
+    findings = run(cov)
+    merkle = findings_merkle(findings)
+
+    ident = AgentIdentity(
+        name=args.name, operator=args.operator, version=args.version,
+        jurisdiction=args.jurisdiction, deployment_mode=args.deployment_mode,
+    )
+    payload = RegistrationPayload(ident, capability_from_scan(cov, findings))
+    payload.add_attestation(
+        kind="static_scan", digest=merkle, issuer=TOOL_ID,
+        scope="AI BOM + 供应链溯源 + 治理完备性",
+    )
+
+    doc = payload.to_dict()
+    report = conformance_report(doc)
+    doc["conformance_self_check"] = report
+
+    outdir = Path(args.out) if args.out else (
+        target if target.is_dir() else target.parent) / ".agentledger"
+    outdir.mkdir(parents=True, exist_ok=True)
+    stamp = doc["generated_at"].replace(":", "").replace("-", "").replace("+0000", "Z")
+    outpath = outdir / f"gbz185-registration-{stamp}.json"
+    outpath.write_text(json.dumps(doc, ensure_ascii=False, indent=2),
+                       encoding="utf-8")
+
+    print()
+    print("  GB/Z 185—2026 智能体注册载荷")
+    print(f"  智能体  {args.name}")
+    print(f"  身份码  {ident.identity_code}")
+    print(f"  要素    {report['element_count']} 项  " +
+          "  ".join(f"{k}={v}" for k, v in sorted(report["by_conformance"].items())))
+    print()
+    print("  能力描述（第 4 部分）：")
+    cd = doc["capability_description"]["counts"]
+    print(f"    模型接入点 {cd['model_endpoints']}   MCP 服务器 {cd['mcp_servers']}"
+          f"   提示词 {cd['prompts']}   工具 {cd['tools']}")
+    print()
+    print("  合规认证登记：")
+    for a in doc["compliance_attestations"]:
+        print(f"    {a['kind']:<12}{a['digest'][:24]}…")
+        print(f"    {'':<12}验证方式：{a['verify']}")
+    print()
+    if not report["identity_code_is_official"]:
+        print("  [!] 身份码为本地推断生成，未使用标准规定的注册分配服务。")
+        print("      提交登记前必须替换为由注册服务方分配的正式身份码。")
+        print()
+    if report["not_yet_verified"]:
+        print(f"  [!] {len(report['not_yet_verified'])} 项要素未达「解读已明确」级：")
+        for gp in report["not_yet_verified"]:
+            print(f"      第{gp['part']}部分  {gp['part_name']:<26}{gp['conformance_zh']}")
+        print()
+        print(f"  {report['blocking_rule']}")
+    else:
+        print("  OK 全部要素均已在官方解读中明确")
+    print()
+    print(f"  输出  {outpath}")
+    print()
+    if args.strict and report["not_yet_verified"]:
+        return 1
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:

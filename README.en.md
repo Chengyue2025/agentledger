@@ -71,7 +71,18 @@ aledger verify          Verify ledger chain integrity
 aledger history         Show the accountability trail
 aledger rules           List rules and their regulatory mapping
 aledger init-key        Generate an attestation key
+aledger receipt keygen  Generate an Ed25519 receipt-signing key
+aledger receipt issue   Issue a delegation receipt (IETF DRP-aligned)
+aledger receipt verify  Verify a receipt and rule on an action offline
+aledger receipt revoke  Revoke a receipt (signed revocation record)
+aledger receipt show    Receipt summary
 ```
+
+Delegation receipts implement the IETF Delegation Receipt Protocol draft as the
+**first independent implementation** (the draft lists only the author's hosted service).
+Offline-first, zero-dependency: Ed25519 in pure Python, receipts and revocations anchored to a
+hash-chained local log. Coverage table and draft-alignment notes:
+[docs/DRP-ALIGNMENT.md](docs/DRP-ALIGNMENT.md).
 
 Options worth knowing:
 

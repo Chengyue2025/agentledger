@@ -7,5 +7,5 @@
 3. 机器出证据，人签字。ledger 提供可验证的证据根，人负责背书。
 """
 
-__version__ = "0.1.0"
-TOOL_ID = "agentledger/0.1.0"
+__version__ = "0.2.0"
+TOOL_ID = "agentledger/0.2.0"

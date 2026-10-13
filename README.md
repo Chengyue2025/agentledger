@@ -78,9 +78,41 @@ Exit code is CI-friendly: `0` clean, `1` findings at/above `--fail-on` (default 
 | `aledger history [path]` | Show scan history (sequence, time, findings, chain head) |
 | `aledger rules [--json]` | Rule catalog with obligation mapping (24 rules, 15 obligations) |
 | `aledger init-key [path]` | Generate an HMAC attestation key for sign-off |
+| `aledger receipt keygen` | Generate an Ed25519 receipt-signing key |
+| `aledger receipt issue` | Issue a delegation receipt (scope, boundaries, time window, signed + ledger-anchored) |
+| `aledger receipt verify` | Verify a receipt and rule on an action (offline, draft-aligned denial codes) |
+| `aledger receipt revoke` | Revoke a receipt (signed revocation record appended to the revocation table) |
+| `aledger receipt show` | Receipt summary |
 
 Key scan options: `--only/--skip` (rule filter), `--fail-on` (severity gate), `--key/--attester`
 (HMAC sign-off), `--no-ledger`, `--json`, `-o/--out` (evidence pack directory).
+
+## Delegation receipts (IETF DRP alignment)
+
+agentledger 0.2.0 implements the **Delegation Receipt Protocol** draft
+([draft-nelson-agent-delegation-receipts](https://datatracker.ietf.org/doc/draft-nelson-agent-delegation-receipts/))
+as the **first independent implementation** — the draft's Implementation Status section lists only
+the author's own hosted service. The agentledger profile is offline-first and zero-dependency:
+
+```console
+$ aledger receipt keygen --out operator
+$ aledger receipt issue --key operator.key \
+    --allow "read:reports/*" --allow "write:notes/*" \
+    --minutes 30 --instructions "file the weekly report" --out grant.json
+$ aledger receipt verify grant.json --action "read:reports/q3.pdf" \
+    --instructions "file the weekly report"
+  裁决  PERMIT ✓
+```
+
+- **Verification subset** (draft §6.4): revocation, signature, time window, scope (default-deny),
+  boundaries, operator-instruction hash, tool-schema hash, trusted sources, parent containment
+  with scope narrowing. Runtime checks (TEE, session trust, execution graph) are explicitly out
+  of CLI scope — see [docs/DRP-ALIGNMENT.md](docs/DRP-ALIGNMENT.md) for the coverage table.
+- **Evidence-native**: receipts, revocations and action decisions append to a hash-chained
+  `receipts.jsonl` (the draft §5 append-only log, local form) under the same trust root as the
+  scan ledger.
+- Ed25519 signing is pure-Python (RFC 8032, official test vectors included) — zero runtime
+  dependencies preserved.
 
 ## Rule catalog (summary)
 
@@ -123,6 +155,8 @@ lose known findings in vulnerable.
 - 24 条规则覆盖 5 大攻击面（MCP 供应链 / 模型接入 / 提示词技能 / 依赖执行 / 治理完备性），24/24 全部真实实现；
 - 15 项监管义务映射（中国 7 / 欧盟 5 / ISO 2 / NIST 1），附条文引文与规则追溯表；
 - 链式账本 + Merkle 根 + HMAC 签署：证据可验真、可追责、可直接出示给审计；
+- **委托收据**（`aledger receipt`）：对齐 IETF DRP 草案的首个独立实现——签发/验证/撤销
+  全离线，Ed25519 纯标准库，收据与撤销记录锚定哈希链账本（见 `docs/DRP-ALIGNMENT.md`）；
 - 零第三方依赖、完全离线可复现——合规工具自己不能有供应链尾巴；
 - 退出码即门禁：`--fail-on HIGH` 直接当 CI 合并条件用。
 

@@ -5,6 +5,40 @@
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-13
+
+新增**委托收据（Delegation Receipt）**能力——对齐 IETF Internet-Draft
+`draft-nelson-agent-delegation-receipts`（读取时 -12 版）的**第一个独立实现**
+（草案实施状态中此前仅有作者自家的 authproof-cloud，prototype 级）。
+
+### 新增
+
+**`aledger receipt` 命令组**
+- `keygen` —— Ed25519 密钥生成（私钥种子 + JWK 公钥）
+- `issue` —— 签发委托收据：范围/拒绝/硬边界/时间窗/指令哈希/工具模式哈希/可信来源，
+  追加进哈希链式收据账本；`--parent` 签发子收据（编排者绑定签名 + 收窄规则）
+- `verify` —— 离线验证并裁决动作，对齐草案 §6.4 检查子集与 §6.5 拒绝码，
+  DENY 按草案 §6.3 回退 `NO_OP_WITH_LOG` 并留痕（§5.4）
+- `revoke` —— 撤销记录（receiptId + 时间 + 撤销方公钥 + 签名）写入撤销表
+- `show` —— 收据摘要
+
+**核心模块**
+- `agentledger/receipt.py` —— 签发/验证/撤销/收据账本（`receipts.jsonl`，草案 §5
+  append-only log 本地形态：seq/ts/kind/body/prev/hash 链）
+- `agentledger/ed25519.py` —— 纯 Python Ed25519（RFC 8032），零依赖红线不破；
+  含 RFC 8032 §7.1 官方测试向量
+- `schemas/drp-receipt.schema.json` —— 收据 JSON Schema（Profile 子集）
+- `docs/DRP-ALIGNMENT.md` —— 字段映射、检查覆盖表、撤销语义、对草案的两处
+  互操作观察（review comment 素材）
+
+**验证检查覆盖**：撤销 / 签名 / 时间窗 / 范围（默认拒绝）/ 边界 / 指令哈希 /
+工具模式哈希 / 可信来源 / 父收据包含与收窄（深度 ≤3）。运行时类检查（TEE、
+会话信任、执行图、权威状态）明确划出 CLI 职责边界，见对齐文档。
+
+### 说明
+- 外层字段剥改攻击已防护：所有检查只读签名体，外层仅作容器
+- 时间戳诚实标注 `local-unverified`（离线无 TSA，草案 §5.3 语义）
+
 ## [0.1.0] - 2026-10-13
 
 首个版本。定位：**机器产出技术证据，人签署并担责。**

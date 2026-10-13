@@ -16,12 +16,28 @@ from typing import Any, Iterator
 from ..model import Artifact, Coverage, Finding, Severity, Surface
 from .common import GOVERNANCE_KEYWORDS, HIGH_RISK_ACTIONS
 
-# 识别智能体清单的文件
+# 识别智能体清单的文件。
+# 命名习惯差异很大（agent.json / agent_manifest.json / acme-agent.yaml /
+# support.agent.toml / agents/*.md），所以不能只枚举固定文件名。
 AGENT_FILE_RE = re.compile(
-    r"(?i)(^|/)(agents?\.json|agents?\.ya?ml|agent\.toml|agents\.md|"
-    r"openclaw\.json|swarm\.ya?ml|subagents?\.json|agent\.md)"
+    r"""(?ix)
+    ( ^ | / )
+    ( [\w.\-]* agent [\w.\-]*          # 任意含 agent 的文件名
+    | [\w.\-]* manifest [\w.\-]*      # 任意含 manifest 的文件名
+    )
+    ( \. (json|ya?ml|toml|md|jsonc) )? $
+    | ( ^ | / ) agents? [\w.\-]* \. (json|ya?ml|toml|md|jsonc) $
+    """
 )
-AGENT_DIR_RE = re.compile(r"(?i)(^|/)(agents?|multi[_\-]?agent|orchestrator)/")
+AGENT_DIR_RE = re.compile(
+    r"(?i)(^|/)(agents?/|agents?\.d/|multi[_\-]?agent/|orchestrators?/"
+    r"|\.claude/agents/|\.cursor/agents/)"
+)
+
+# 明显不是智能体清单的同名文件，避免误判
+_AGENT_FALSE_POSITIVE = re.compile(
+    r"(?i)(^|/)(agent[_\-]?forge|agentic[_\-]?sdk|agent[_\-]?runtime[_\-]?test)\b"
+)
 
 REQUIRED_DECLARATIONS = (
     ("human_in_the_loop", Severity.HIGH, "人工介入机制",
@@ -68,11 +84,16 @@ def _declared(blob: str, group: str) -> bool:
     return any(kw in blob for kw in GOVERNANCE_KEYWORDS[group])
 
 
+def _is_agent_file(path: str) -> bool:
+    if _AGENT_FALSE_POSITIVE.search(path):
+        return False
+    return bool(AGENT_FILE_RE.search(path) or AGENT_DIR_RE.search(path))
+
+
 def scan(art: Artifact) -> Iterator[Finding]:
     if not art.text:
         return
-    is_agent_file = bool(AGENT_FILE_RE.search(art.path) or AGENT_DIR_RE.search(art.path))
-    if not is_agent_file:
+    if not _is_agent_file(art.path):
         return
 
     parsed = art.data if art.kind in ("json", "toml") else None
