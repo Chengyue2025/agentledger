@@ -87,9 +87,11 @@ jobs:
           lines[0] = json.dumps(d, sort_keys=True, separators=(',',':'), ensure_ascii=False)
           p.write_text('\n'.join(lines)+'\n', encoding='utf-8')
           r = subprocess.run([sys.executable,'-m','agentledger','verify',
-                              'fixtures/vulnerable'], capture_output=True, text=True)
+                              'fixtures/vulnerable'], capture_output=True, text=True,
+                             encoding='utf-8', errors='replace')
           assert r.returncode == 1, 'tampering must be detected'
-          assert '断裂' in r.stdout or '✘' in r.stdout or 'X' in r.stdout, r.stdout
+          out = r.stdout or ''
+          assert '断裂' in out or '✘' in out or 'X' in out, out
           print('tamper detection OK')
           PY
 
