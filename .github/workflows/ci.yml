@@ -17,6 +17,10 @@ jobs:
   test:
     name: test (py${{ matrix.python }})
     runs-on: ${{ matrix.os }}
+    # Windows runner 默认 shell 是 pwsh，不支持 heredoc；统一 bash（Git Bash）保证三平台一致
+    defaults:
+      run:
+        shell: bash
     strategy:
       fail-fast: false
       matrix:
@@ -44,7 +48,7 @@ jobs:
 
       - name: Scan fixtures — vulnerable must be caught
         run: |
-          python -m agentledger scan ../fixtures/vulnerable --no-ledger -o /tmp/al-vuln || true
+          python -m agentledger scan fixtures/vulnerable --no-ledger -o /tmp/al-vuln || true
           python - <<'PY'
           import json, glob, sys
           f = sorted(glob.glob('/tmp/al-vuln/pack-*.json'))[-1]
@@ -59,7 +63,7 @@ jobs:
 
       - name: Scan fixtures — compliant must be silent
         run: |
-          python -m agentledger scan ../fixtures/clean --no-ledger -o /tmp/al-clean
+          python -m agentledger scan fixtures/clean --no-ledger -o /tmp/al-clean
           python - <<'PY'
           import json, glob
           f = sorted(glob.glob('/tmp/al-clean/pack-*.json'))[-1]
@@ -71,19 +75,19 @@ jobs:
 
       - name: Verify ledger tamper detection
         run: |
-          python -m agentledger scan ../fixtures/vulnerable --no-ledger -o /tmp/al-led >/dev/null 2>&1 || true
-          python -m agentledger scan ../fixtures/vulnerable -o /tmp/al-led >/dev/null 2>&1 || true
-          python -m agentledger scan ../fixtures/vulnerable -o /tmp/al-led >/dev/null 2>&1 || true
-          python -m agentledger verify ../fixtures/vulnerable
+          python -m agentledger scan fixtures/vulnerable --no-ledger -o /tmp/al-led >/dev/null 2>&1 || true
+          python -m agentledger scan fixtures/vulnerable -o /tmp/al-led >/dev/null 2>&1 || true
+          python -m agentledger scan fixtures/vulnerable -o /tmp/al-led >/dev/null 2>&1 || true
+          python -m agentledger verify fixtures/vulnerable
           python - <<'PY'
           import json, pathlib, subprocess, sys
-          p = pathlib.Path('../fixtures/vulnerable/.agentledger/ledger.jsonl')
+          p = pathlib.Path('fixtures/vulnerable/.agentledger/ledger.jsonl')
           lines = p.read_text(encoding='utf-8').splitlines()
           d = json.loads(lines[0]); d['findings'] = 0
           lines[0] = json.dumps(d, sort_keys=True, separators=(',',':'), ensure_ascii=False)
           p.write_text('\n'.join(lines)+'\n', encoding='utf-8')
           r = subprocess.run([sys.executable,'-m','agentledger','verify',
-                              '../fixtures/vulnerable'], capture_output=True, text=True)
+                              'fixtures/vulnerable'], capture_output=True, text=True)
           assert r.returncode == 1, 'tampering must be detected'
           assert '断裂' in r.stdout or '✘' in r.stdout or 'X' in r.stdout, r.stdout
           print('tamper detection OK')
@@ -91,7 +95,7 @@ jobs:
 
       - name: SARIF must be well-formed
         run: |
-          python -m agentledger scan ../fixtures/vulnerable --sarif --no-ledger -o /tmp/al-sarif >/dev/null 2>&1 || true
+          python -m agentledger scan fixtures/vulnerable --sarif --no-ledger -o /tmp/al-sarif >/dev/null 2>&1 || true
           python - <<'PY'
           import json, glob
           f = sorted(glob.glob('/tmp/al-sarif/scan-*.sarif'))[-1]
@@ -117,8 +121,8 @@ jobs:
           python -m pip install --upgrade build
           python -m build
           python -m pip install dist/*.whl --no-deps -q
-          aleder --version
-          aleder rules | head -5
+          aledger --version
+          aledger rules | head -5
       - uses: actions/upload-artifact@v4
         with:
           name: dist
