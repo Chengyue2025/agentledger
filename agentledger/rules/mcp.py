@@ -103,7 +103,14 @@ def _iter_server_maps(node: Any, path: str = "$") -> Iterator[tuple[str, dict]]:
             yield from _iter_server_maps(val, f"{path}[{i}]")
 
 
-def _flatten_strings(spec: dict) -> Iterator[tuple[str, str]]:
+def _flatten_strings(spec: dict, _depth: int = 0) -> Iterator[tuple[str, str]]:
+    """递归展开配置中的字符串字段。
+
+    工具投毒（tool poisoning）最常见的载体是 tools[].description 这类嵌套字段，
+    只扫顶层会漏掉真实攻击面，这里做有深度上限的递归。
+    """
+    if _depth > 6:
+        return
     for k, v in spec.items():
         if k.startswith("_"):
             continue
@@ -113,6 +120,10 @@ def _flatten_strings(spec: dict) -> Iterator[tuple[str, str]]:
             for item in v:
                 if isinstance(item, str):
                     yield k, item
+                elif isinstance(item, dict):
+                    yield from _flatten_strings(item, _depth + 1)
+        elif isinstance(v, dict):
+            yield from _flatten_strings(v, _depth + 1)
 
 
 def scan(art: Artifact) -> Iterator[Finding]:

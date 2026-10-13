@@ -48,10 +48,10 @@ jobs:
 
       - name: Scan fixtures — vulnerable must be caught
         run: |
-          python -m agentledger scan fixtures/vulnerable --no-ledger -o /tmp/al-vuln || true
+          python -m agentledger scan fixtures/vulnerable --no-ledger -o .ci-out/vuln || true
           python - <<'PY'
           import json, glob, sys
-          f = sorted(glob.glob('/tmp/al-vuln/pack-*.json'))[-1]
+          f = sorted(glob.glob('.ci-out/vuln/pack-*.json'))[-1]
           d = json.load(open(f, encoding='utf-8'))
           ids = {x['rule_id'] for x in d['findings']}
           required = {'MCP002','MCP003','PRM002','DEP002','AGT002'}
@@ -63,10 +63,10 @@ jobs:
 
       - name: Scan fixtures — compliant must be silent
         run: |
-          python -m agentledger scan fixtures/clean --no-ledger -o /tmp/al-clean
+          python -m agentledger scan fixtures/clean --no-ledger -o .ci-out/clean
           python - <<'PY'
           import json, glob
-          f = sorted(glob.glob('/tmp/al-clean/pack-*.json'))[-1]
+          f = sorted(glob.glob('.ci-out/clean/pack-*.json'))[-1]
           d = json.load(open(f, encoding='utf-8'))
           assert d['summary']['total_findings'] == 0, \
               f'compliant baseline must be silent, got {d["findings"]}'
@@ -75,9 +75,9 @@ jobs:
 
       - name: Verify ledger tamper detection
         run: |
-          python -m agentledger scan fixtures/vulnerable --no-ledger -o /tmp/al-led >/dev/null 2>&1 || true
-          python -m agentledger scan fixtures/vulnerable -o /tmp/al-led >/dev/null 2>&1 || true
-          python -m agentledger scan fixtures/vulnerable -o /tmp/al-led >/dev/null 2>&1 || true
+          python -m agentledger scan fixtures/vulnerable --no-ledger -o .ci-out/led >/dev/null 2>&1 || true
+          python -m agentledger scan fixtures/vulnerable -o .ci-out/led >/dev/null 2>&1 || true
+          python -m agentledger scan fixtures/vulnerable -o .ci-out/led >/dev/null 2>&1 || true
           python -m agentledger verify fixtures/vulnerable
           python - <<'PY'
           import json, pathlib, subprocess, sys
@@ -95,10 +95,10 @@ jobs:
 
       - name: SARIF must be well-formed
         run: |
-          python -m agentledger scan fixtures/vulnerable --sarif --no-ledger -o /tmp/al-sarif >/dev/null 2>&1 || true
+          python -m agentledger scan fixtures/vulnerable --sarif --no-ledger -o .ci-out/sarif >/dev/null 2>&1 || true
           python - <<'PY'
           import json, glob
-          f = sorted(glob.glob('/tmp/al-sarif/scan-*.sarif'))[-1]
+          f = sorted(glob.glob('.ci-out/sarif/scan-*.sarif'))[-1]
           d = json.load(open(f, encoding='utf-8'))
           assert d['version'] == '2.1.0'
           run = d['runs'][0]

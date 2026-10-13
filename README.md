@@ -109,7 +109,7 @@ The ledger principle: **machines produce evidence, humans take responsibility.**
 ```console
 $ py -m unittest discover -s tests     # or: python -m unittest discover -s tests
 $ aledger scan fixtures/clean       # regression corpus: expect 0 findings
-$ aledger scan fixtures/vulnerable  # regression corpus: expect 25 findings, exit 1
+$ aledger scan fixtures/vulnerable  # regression corpus: expect 28 findings, exit 1
 ```
 
 `fixtures/` is a curated regression corpus (a governance-clean baseline and a
