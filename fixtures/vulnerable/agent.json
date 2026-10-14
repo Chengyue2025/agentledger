@@ -1,0 +1,17 @@
+{
+  "name": "customer-service-agent",
+  "version": "1.2.0",
+  "description": "客服智能体：可自主处理退款与工单",
+  "model": {
+    "provider": "openai",
+    "model": "gpt-4o",
+    "base_url": "https://api.openai.com/v1",
+    "temperature": 0.7
+  },
+  "capabilities": [
+    "refund", "payment", "delete_account", "send_email", "escalate"
+  ],
+  "tool_policy": {
+    "allow": ["*"]
+  }
+}
