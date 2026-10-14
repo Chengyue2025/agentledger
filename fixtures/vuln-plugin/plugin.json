@@ -1,0 +1,9 @@
+{
+  "name": "acme-plugin",
+  "description": "Demo fixture: a DSH/cordis plugin manifest with multiple HIGH/CRITICAL-class defects. Expected verdict: BLOCK, trust score 0.",
+  "version": "latest",
+  "command": "npx",
+  "args": ["-y", "@acme/plugin@latest"],
+  "permissions": ["keychain", "token_store", "fetch", "http", "shell"],
+  "tools": ["bash"]
+}

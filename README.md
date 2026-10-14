@@ -11,8 +11,9 @@ Today 79% of companies use agents, yet only ~2% run them at scale (PwC, 2026). T
 not model quality — it is governance, audit trails and supply-chain provenance. agentledger is a
 scanner that turns an agent repository into a **verifiable evidence pack**.
 
-- **24 detection rules across 5 attack surfaces**: MCP server supply chain · model integration ·
-  prompts & skills · dependencies & execution · governance completeness
+- **36 detection rules across 7 attack surfaces**: MCP server supply chain · model integration ·
+  prompts & skills · dependencies & execution · governance completeness ·
+  **harness plugins & runtimes (HRN)** · **share packages / marketplace bots (SHR)**
 - **15 regulatory obligations mapped** (CN ×7, EU ×5, ISO ×2, NIST ×1), each with clause quotes
   and a rule → obligation traceability table
 - **Tamper-evident ledger**: append-only JSONL chain + Merkle root over findings + HMAC
@@ -74,34 +75,42 @@ Exit code is CI-friendly: `0` clean, `1` findings at/above `--fail-on` (default 
 | Command | Purpose |
 |---|---|
 | `aledger scan <path>` | Scan a directory/file, write evidence pack, append to ledger |
+| `aledger audit-share <path>` | Pre-import audit of share packages/plugins: BLOCK/CAUTION/CLEAR verdict + trust score (0–100), single or batch |
 | `aledger verify [path]` | Verify the ledger hash chain & detect tampering |
 | `aledger history [path]` | Show scan history (sequence, time, findings, chain head) |
-| `aledger rules [--json]` | Rule catalog with obligation mapping (24 rules, 15 obligations) |
+| `aledger rules [--json]` | Rule catalog with obligation mapping (36 rules, 15 obligations) |
 | `aledger init-key [path]` | Generate an HMAC attestation key for sign-off |
-| `aledger receipt keygen` | Generate an Ed25519 receipt-signing key |
+| `aledger receipt keygen` | Generate an ES256 (default) or Ed25519 receipt-signing key |
 | `aledger receipt issue` | Issue a delegation receipt (scope, boundaries, time window, signed + ledger-anchored) |
 | `aledger receipt verify` | Verify a receipt and rule on an action (offline, draft-aligned denial codes) |
 | `aledger receipt revoke` | Revoke a receipt (signed revocation record appended to the revocation table) |
 | `aledger receipt show` | Receipt summary |
+| `aledger gbz185 <path>` | Export a GB/Z 185-2026 agent-registration payload (with self-check) |
 
 Key scan options: `--only/--skip` (rule filter), `--fail-on` (severity gate), `--key/--attester`
 (HMAC sign-off), `--no-ledger`, `--json`, `-o/--out` (evidence pack directory).
 
 ## Delegation receipts (IETF DRP alignment)
 
-agentledger 0.2.0 implements the **Delegation Receipt Protocol** draft
-([draft-nelson-agent-delegation-receipts](https://datatracker.ietf.org/doc/draft-nelson-agent-delegation-receipts/))
-as the **first independent implementation** — the draft's Implementation Status section lists only
-the author's own hosted service. The agentledger profile is offline-first and zero-dependency:
+agentledger implements the **Delegation Receipt Protocol** draft
+([draft-nelson-agent-delegation-receipts](https://datatracker.ietf.org/doc/draft-nelson-agent-delegation-receipts/),
+read at **-13**, 2026-10-14) as the **first independent implementation** — the draft's
+Implementation Status section lists only the author's own hosted service. The -13 revision
+explicitly incorporates feedback from this implementation (filed as INTEROP-15).
+The agentledger profile is offline-first and zero-dependency:
 
 ```console
-$ aledger receipt keygen --out operator
-$ aledger receipt issue --key operator.key \
-    --allow "read:reports/*" --allow "write:notes/*" \
-    --minutes 30 --instructions "file the weekly report" --out grant.json
-$ aledger receipt verify grant.json --action "read:reports/q3.pdf" \
+$ aledger receipt keygen --out operator          # ES256 (P-256) by default
+$ echo '{"allowedActions":[{"operation":"read","resource":"reports/*"}]}' > scope.json
+$ aledger receipt issue --key operator --scope "read:reports/*" \
+    --boundaries "no network egress" --instructions "file the weekly report" \
+    --schema scope.json --start 2026-10-14T00:00:00Z --end 2027-01-01T00:00:00Z \
+    --out grant.json
+$ aledger receipt verify --jws "@grant.json" --action "read::reports/q3.pdf" \
     --instructions "file the weekly report"
-  裁决  PERMIT ✓
+  {"valid": true, "errors": [], "warnings": [], "receiptId": "..."}
+$ aledger receipt verify --jws "@grant.json" --action "write::secrets/keys"
+  {"valid": false, "errors": ["SCOPE_ACTION_DENIED"], ...}
 ```
 
 - **Verification subset** (draft §6.4): revocation, signature, time window, scope (default-deny),
@@ -111,8 +120,9 @@ $ aledger receipt verify grant.json --action "read:reports/q3.pdf" \
 - **Evidence-native**: receipts, revocations and action decisions append to a hash-chained
   `receipts.jsonl` (the draft §5 append-only log, local form) under the same trust root as the
   scan ledger.
-- Ed25519 signing is pure-Python (RFC 8032, official test vectors included) — zero runtime
-  dependencies preserved.
+- Signing is pure-Python: **ES256 (P-256, NIST)** by default with JWS Compact
+  Serialization and RFC 8785 JCS; **Ed25519 (RFC 8032, official test vectors
+  included)** retained via `--alg Ed25519`. Zero runtime dependencies preserved.
 
 ## Rule catalog (summary)
 
@@ -123,6 +133,8 @@ $ aledger receipt verify grant.json --action "read:reports/q3.pdf" \
 | Prompts & skills | `PRM` | 5 | explicit injection, injection hidden in comments, zero-width characters, base64 payloads, missing anthropomorphism disclosure |
 | Dependencies & execution | `DEP` | 4 | hardcoded secrets, `eval`/`shell=True` sinks, unescaped SQL/path construction, unpinned deps |
 | Governance | `AGT` | 4 | missing governance declaration, high-risk actions without approval gates, no sandbox declaration, missing project-level governance docs |
+| Harness plugins & runtimes | `HRN` | 7 | plugin manifest without permission scope, unpinned/floating versions, credential access without approval gate, network without egress control, exec without sandbox, no trajectory/audit, IM bot open access |
+| Share packages / marketplace bots | `SHR` | 5 | plaintext credentials, injected skills/routines (incl. hidden containers), risky routines without gates, missing provenance, shared-computer access without isolation |
 
 Every rule maps to one or more regulatory obligations; `aledger rules --json` exports the full
 traceability table (machine-readable, for your GRC tooling).
@@ -140,19 +152,21 @@ The ledger principle: **machines produce evidence, humans take responsibility.**
 
 ```console
 $ py -m unittest discover -s tests     # or: python -m unittest discover -s tests
-$ aledger scan fixtures/clean       # regression corpus: expect 0 findings
-$ aledger scan fixtures/vulnerable  # regression corpus: expect 28 findings, exit 1
+$ aledger audit-share fixtures/vuln-share   # verdict BLOCK, trust score 0, exit 1
+$ aledger audit-share fixtures/clean-share   # verdict CLEAR, trust score 100, exit 0
+$ aledger audit-share fixtures               # batch mode: per-package ranking table
 ```
 
-`fixtures/` is a curated regression corpus (a governance-clean baseline and a
-systematically-vulnerable agent project). Rule changes must keep clean = 0 and must not
-lose known findings in vulnerable.
+`fixtures/` is a curated audit corpus: `vuln-share` (injected skill + plaintext
+credential + risky routine + shared-computer access + no provenance → BLOCK),
+`clean-share` (provenance + approval gate + read-only → CLEAR), plus `vuln-plugin`
+and `clean-plugin` for the HRN family.
 
 ## 中文
 
 **agentledger：智能体的 AI BOM、供应链溯源与防篡改责任留痕。**
 
-- 24 条规则覆盖 5 大攻击面（MCP 供应链 / 模型接入 / 提示词技能 / 依赖执行 / 治理完备性），24/24 全部真实实现；
+- 36 条规则覆盖 7 大攻击面（MCP 供应链 / 模型接入 / 提示词技能 / 依赖执行 / 治理完备性 / harness 插件与运行时 / 分享包与 marketplace bot），36/36 全部真实实现；
 - 15 项监管义务映射（中国 7 / 欧盟 5 / ISO 2 / NIST 1），附条文引文与规则追溯表；
 - 链式账本 + Merkle 根 + HMAC 签署：证据可验真、可追责、可直接出示给审计；
 - **委托收据**（`aledger receipt`）：对齐 IETF DRP 草案的首个独立实现——签发/验证/撤销

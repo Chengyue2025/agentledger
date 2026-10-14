@@ -44,6 +44,12 @@ AI_FILENAMES = {
     "agent.json", "agents.json", "agent.yaml", "agents.yaml",
     "agent.toml", "agent.md", "openclaw.json", "swarm.yaml",
     "mcp-agents.json", "subagents.json",
+    # harness 插件清单（dsh/Cordis、grok-build 扩展、IM bot 桥）
+    "plugin.json", "plugin.yaml", "plugin.toml", "cordis.json",
+    "dsh.json", "harness.json", "dsh.yaml",
+    # 分享包 / marketplace bot / routine（Grok share 等）
+    "share.json", "bot.json", "bot.yaml", "marketplace.json",
+    "routine.json", "routines.json", "skills.json",
     # 指令 / 提示词
     "agents.md", "claude.md", "gemini.md", "copilot-instructions.md",
     ".cursorrules", ".windsurfrules",
@@ -59,6 +65,9 @@ AI_DIR_HINTS = {
     "skills", "prompts", "agents", "agent", "mcp", "mcp_servers", "mcps",
     "instructions", "rules", ".cursor", ".claude", ".github",
     "chains", "workflows", "pipelines", "tools", "skills.d",
+    # harness 插件与分享包生态（2026-10 新增）
+    "plugins", "plugins.d", "plugin.d", "shares", "bots", "routines",
+    "marketplace", "harness", ".dsh",
 }
 
 MAX_FILE_BYTES = 2_000_000   # 超大文件跳过并记录（避免把数据仓库当代码扫）

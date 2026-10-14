@@ -67,20 +67,23 @@ aledger scan /path/to/your/project
 
 ```bash
 aledger scan <path>     Scan and emit an evidence pack (JSON + Markdown)
+aledger audit-share <path>  Pre-import audit of share packages/plugins: BLOCK/CAUTION/CLEAR verdict + trust score (0–100), single or batch
 aledger verify          Verify ledger chain integrity
 aledger history         Show the accountability trail
 aledger rules           List rules and their regulatory mapping
 aledger init-key        Generate an attestation key
-aledger receipt keygen  Generate an Ed25519 receipt-signing key
+aledger receipt keygen  Generate an ES256 (default) or Ed25519 receipt-signing key
 aledger receipt issue   Issue a delegation receipt (IETF DRP-aligned)
 aledger receipt verify  Verify a receipt and rule on an action offline
 aledger receipt revoke  Revoke a receipt (signed revocation record)
 aledger receipt show    Receipt summary
+aledger gbz185 <path>   Export a GB/Z 185-2026 agent-registration payload (with self-check)
 ```
 
 Delegation receipts implement the IETF Delegation Receipt Protocol draft as the
 **first independent implementation** (the draft lists only the author's hosted service).
-Offline-first, zero-dependency: Ed25519 in pure Python, receipts and revocations anchored to a
+Offline-first, zero-dependency: ES256 (P-256) and JWS Compact Serialization in pure
+Python (Ed25519 retained as an option), receipts and revocations anchored to a
 hash-chained local log. Coverage table and draft-alignment notes:
 [docs/DRP-ALIGNMENT.md](docs/DRP-ALIGNMENT.md).
 
@@ -118,8 +121,16 @@ Jenkins SAST panels, and internal Jira/Feishu/DingTalk code-quality plugins.
 | `PRM` | Prompts & skills | `PRM002` injection in comments · `PRM003` zero-width chars · `PRM004` base64 payload |
 | `DEP` | Dependencies & execution | `DEP002` dangerous sink · `DEP003` unsanitized output · `DEP004` unpinned versions |
 | `AGT` | Agent governance | `AGT002` high-risk action without gate · `AGT001` missing declarations |
+| `HRN` | Harness plugins & runtimes | `HRN003` credential access without gate · `HRN005` exec without sandbox · `HRN007` IM bot open access |
+| `SHR` | Share packages / marketplace bots | `SHR002` injected skills · `SHR005` shared-computer access · `SHR001` plaintext credentials |
 
 Run `aledger rules` for the full catalogue and obligation mapping.
+
+`aledger audit-share` targets the 2026 verification vacuum: ClawHub skills
+(44K+, 7.6% flagged malicious, static scan only), DeepSeek Harness plugins
+(1000+, zero review) and Grok Bot share links (3954 live, no pre-import checks) —
+one verifier, three markets. Batch mode audits a directory of share exports
+and ranks them by trust score.
 
 ## Regulatory mapping
 

@@ -39,7 +39,7 @@ __all__ = ["register"]
 # ------------------------------------------------------------------ keys
 
 def _load_key(path: str) -> tuple[str, Any]:
-    raw = json.loads(Path(path).read_text(encoding="utf-8"))
+    raw = json.loads(Path(path).read_text(encoding="utf-8-sig"))
     alg = raw.get("alg", "ES256")
     secret = raw.get("private")
     if not isinstance(secret, str):
@@ -109,10 +109,10 @@ def _build_body(args: argparse.Namespace, alg: str,
         body["agentId"] = args.agent_id
     if args.metadata:
         body["metadata"] = json.loads(Path(args.metadata).read_text(
-            encoding="utf-8"))
+            encoding="utf-8-sig"))
     if args.schema:
         body["scopeSchema"] = json.loads(Path(args.schema).read_text(
-            encoding="utf-8"))
+            encoding="utf-8-sig"))
     if args.trusted_sources:
         body["trustedSources"] = [s for s in
                                   args.trusted_sources.split(",") if s]
@@ -178,7 +178,7 @@ def _read_jws(value: str) -> str:
     if value == "-":
         return sys.stdin.read().strip()
     if value.startswith("@"):
-        text = Path(value[1:]).read_text(encoding="utf-8").strip()
+        text = Path(value[1:]).read_text(encoding="utf-8-sig").strip()
         if text.startswith("{"):  # {"jws": ...} envelope
             return json.loads(text)["jws"]
         return text
@@ -191,7 +191,7 @@ def _load_registry(path: str | None) -> RevocationRegistry | None:
     if not path:
         return None
     registry = RevocationRegistry()
-    for line in Path(path).read_text(encoding="utf-8").splitlines():
+    for line in Path(path).read_text(encoding="utf-8-sig").splitlines():
         line = line.strip()
         if not line:
             continue
@@ -223,7 +223,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
     action = _action_from(args.action, args.params)
     claimed = args.instructions
     if claimed and claimed.startswith("@"):
-        claimed = Path(claimed[1:]).read_text(encoding="utf-8")
+        claimed = Path(claimed[1:]).read_text(encoding="utf-8-sig")
     result = verify_receipt(
         jws_text, args.at, registry=registry, action=action,
         claimed_instructions=claimed,
@@ -234,7 +234,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
 
 
 def cmd_chain(args: argparse.Namespace) -> int:
-    data = json.loads(Path(args.file).read_text(encoding="utf-8"))
+    data = json.loads(Path(args.file).read_text(encoding="utf-8-sig"))
     elements = data["chain"] if isinstance(data, dict) else data
     registry = _load_registry(args.registry)
     result = verify_chain(elements, args.at, registry=registry,
@@ -261,7 +261,7 @@ def cmd_revoke(args: argparse.Namespace) -> int:
 
 
 def cmd_record_verify(args: argparse.Namespace) -> int:
-    record = json.loads(Path(args.file).read_text(encoding="utf-8"))
+    record = json.loads(Path(args.file).read_text(encoding="utf-8-sig"))
     ok = drp.verify_revocation_record(record)
     print(json.dumps({"valid": ok}))
     return 0 if ok else 1
@@ -277,7 +277,7 @@ def cmd_show(args: argparse.Namespace) -> int:
                           "header": header, "body": body}, indent=1))
         return 0
     if args.id:
-        for line in Path(args.log).read_text(encoding="utf-8") \
+        for line in Path(args.log).read_text(encoding="utf-8-sig") \
                 .splitlines():
             if not line.strip():
                 continue
@@ -292,13 +292,13 @@ def cmd_show(args: argparse.Namespace) -> int:
 
 def cmd_corpus(args: argparse.Namespace) -> int:
     if args.file:
-        corpus = json.loads(Path(args.file).read_text(encoding="utf-8"))
+        corpus = json.loads(Path(args.file).read_text(encoding="utf-8-sig"))
     else:
         from importlib import resources
         corpus = json.loads(
             resources.files("agentledger")
             .joinpath("data/interop-corpus.json").read_text(
-                encoding="utf-8"))
+                encoding="utf-8-sig"))
     rows = run_corpus(corpus)
     for row in rows:
         flag = "PASS" if row["pass"] else "FAIL"

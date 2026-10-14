@@ -136,6 +136,20 @@ RULE_OBLIGATIONS: dict[str, list[str]] = {
     "AGT002": ["CN-IMPL-10", "EU-ART14"],
     "AGT003": ["EU-ART15", "EU-ART17"],
     "AGT004": ["CN-IMPL-12", "EU-ART12", "EU-ART26", "ISO42001-A8", "ISO42001-A9"],
+    # harness 插件与运行时（HRN 族，2026-10 新增）
+    "HRN001": ["CN-IMPL-08", "CN-IMPL-10", "EU-ART14", "ISO42001-A8"],
+    "HRN002": ["CN-IMPL-08", "EU-ART17", "NIST-MEASURE"],
+    "HRN003": ["CN-IMPL-08", "CN-IMPL-10", "EU-ART14", "EU-ART15", "NIST-MEASURE"],
+    "HRN004": ["CN-IMPL-08", "EU-ART15", "EU-ART17"],
+    "HRN005": ["CN-IMPL-10", "EU-ART15", "EU-ART17"],
+    "HRN006": ["EU-ART12", "EU-ART26", "CN-IMPL-11", "ISO42001-A9"],
+    "HRN007": ["CN-IMPL-10", "EU-ART14", "CN-IMPL-08"],
+    # 分享包 / marketplace bot（SHR 族，2026-10 新增）
+    "SHR001": ["CN-DATA", "CN-IMPL-08", "EU-ART17", "ISO42001-A9"],
+    "SHR002": ["CN-IMPL-08", "CN-IMPL-10", "EU-ART15"],
+    "SHR003": ["CN-IMPL-10", "EU-ART14"],
+    "SHR004": ["CN-IMPL-08", "CN-IMPL-12", "NIST-MEASURE"],
+    "SHR005": ["CN-IMPL-10", "EU-ART15"],
 }
 
 # --------------------------------------------------------------------------

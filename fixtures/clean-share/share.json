@@ -1,0 +1,25 @@
+{
+  "bot": {
+    "name": "doc-helper",
+    "description": "Demo fixture: a clean share package. Read-only skill, approval-gated routines, provenance and signature present."
+  },
+  "skills": [
+    {
+      "name": "summarize",
+      "instructions": "Summarize the document read-only. Never send data to external endpoints."
+    }
+  ],
+  "routines": [
+    {
+      "name": "daily-digest",
+      "actions": ["summarize"],
+      "approval_required": true
+    }
+  ],
+  "tools": [
+    {"name": "read_file", "scope": "workspace"}
+  ],
+  "source": "https://x.ai/bot/abc123",
+  "signature": "ed25519:9f8a7b6c5d4e3f2a1b0c",
+  "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+}

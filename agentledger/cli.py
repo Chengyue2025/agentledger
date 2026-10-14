@@ -1,6 +1,7 @@
 """aledger 命令行入口。
 
     aledger scan <path>          扫描并生成证据包
+    aledger audit-share <path>   分享包/插件导入前审计（裁决 + 证据包）
     aledger verify               校验账本链完整性
     aledger history              查看留痕历史
     aledger rules                列出规则目录与义务映射
@@ -15,6 +16,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from pathlib import Path
 
 from . import TOOL_ID, __version__, receipt
@@ -202,7 +204,8 @@ def cmd_rules(args: argparse.Namespace) -> int:
     print(f"  规则目录 — {TOOL_ID}")
     print()
     groups = {"MCP": "MCP 服务器供应链", "MDL": "模型接入",
-              "PRM": "提示词 / 技能", "DEP": "依赖与执行", "AGT": "智能体治理"}
+              "PRM": "提示词 / 技能", "DEP": "依赖与执行", "AGT": "智能体治理",
+              "HRN": "Harness 插件与运行时", "SHR": "分享包 / marketplace bot"}
     for prefix, label in groups.items():
         print(f"  {label}")
         for rid, (title, tag) in RULE_CATALOG.items():
@@ -225,6 +228,157 @@ def cmd_init_key(args: argparse.Namespace) -> int:
     print("  该密钥用于 HMAC-SHA256 分离式签名。")
     print("  注意：HMAC 为对称算法，能证明证据未被改动，但不能证明'是谁签的'。")
     print("  若需不可抵赖的非对称签名，请用外部 KMS/CA 签发后附加到证据包。")
+    return 0
+
+
+# --------------------------------------------------------------------------
+def _trust_score(findings) -> dict:
+    """信任分：0-100，按严重度加权扣分。
+
+    设计依据（与规则库同权重哲学）：CRITICAL 足以一票否决，
+    HIGH 显著扣分，MEDIUM 小额扣分，LOW/INFO 不扣（避免噪音淹没信号）。
+    """
+    weights = {"CRITICAL": 40, "HIGH": 20, "MEDIUM": 5, "LOW": 1, "INFO": 0}
+    deductions = [weights.get(f.severity.value, 0) for f in findings]
+    score = max(0, 100 - sum(deductions))
+    return {
+        "score": score,
+        "deductions": {sev: w for sev, w in
+                       zip([x.severity.value for x in findings], deductions) if w},
+    }
+
+
+def _verdict_for(findings) -> tuple[str, str]:
+    """（裁决, 标记）。BLOCK=存在高危及以上；CAUTION=仅中危；CLEAR=干净。"""
+    if any(f.severity.rank <= Severity.HIGH.rank for f in findings):
+        return "BLOCK", BAD_MARK
+    if any(f.severity.rank == Severity.MEDIUM.rank for f in findings):
+        return "CAUTION", "!"
+    return "CLEAR", OK_MARK
+
+
+def _is_candidate(art) -> bool:
+    """是否插件/分享包候选（HRN/SHR 两族的并集）。"""
+    from .rules import harness, shares
+    return (harness._is_plugin_manifest(art) or shares._is_share_package(art))
+
+
+def cmd_audit_share(args: argparse.Namespace) -> int:
+    """分享包/插件导入前审计（P-05 验证器的 CLI 形态）。
+
+    两种形态：
+      · 单包：路径指向单个清单 —— 输出该包的裁决与信任分。
+      · 批量：路径指向目录 —— 独立审计每个候选包，输出排名表
+        （P-04 报告生成器的直接输入：一条目录 = 一批 share）。
+
+    与 `scan --only harness share` 的区别：输出的是**可张贴的导入裁决**
+    （BLOCK / CAUTION / CLEAR + 信任分），而不是供工程师阅读的发现列表。
+    裁决 + 证据包 = 可以被流程引用（CI 门禁 / 导入审批单）的物件。
+    """
+    from .rules import harness, shares
+
+    target = Path(args.path).resolve()
+    if not target.exists():
+        print(f"[x] 路径不存在: {target}", file=sys.stderr)
+        return 2
+
+    cov = discover(target, max_files=args.max_files)
+
+    if target.is_file():
+        candidates = [a for a in cov.artifacts if a.path == target.name]
+    else:
+        candidates = [a for a in cov.artifacts if _is_candidate(a)]
+
+    # ---- 逐包独立审计（批量语义：包与包之间不互相污染） -------------
+    rows: list[tuple] = []
+    for art in candidates:
+        findings = list(harness.scan(art)) + list(shares.scan(art))
+        findings.sort(key=lambda f: f.sort_key())
+        verdict, vmark = _verdict_for(findings)
+        rows.append((art.path, verdict, vmark, len(findings),
+                     _trust_score(findings)["score"], findings))
+
+    if not rows:
+        print(f"  未发现插件/分享包候选（扫描 {cov.scanned_files} 文件）")
+        print("  提示：清单需在文件名/目录上体现 plugin/bot/share/routine 形态。")
+        return 0
+
+    # ---- 输出 ----------------------------------------------------------
+    print()
+    print(f"  分享包 / 插件导入前审计  ——  {'批量' if len(rows) > 1 else '单包'}模式"
+          f"（{len(rows)} 个候选包）")
+    print(f"  目标  {target}")
+    print(f"  覆盖  扫描 {cov.scanned_files} 文件 / 候选包 {len(rows)} 个")
+    print()
+    print(f"  {'裁决':<8}{'信任分':>6}  {'命中':>4}  包")
+    print(f"  {'─' * 6}{'─' * 8}{'─' * 6}  {'─' * 36}")
+    for path, verdict, vmark, n, score, _ in rows:
+        bar = BOX["bar"] * max(0, min(score // 10, 10))
+        print(f"  {vmark} {verdict:<7}{score:>5}  {n:>4}  {path}  [{bar}]")
+    print()
+
+    worst = next((v for _, v, *_ in rows if v == "BLOCK"), None)
+    blockers = [p for p, v, *_ in rows if v == "BLOCK"]
+    cautions = [p for p, v, *_ in rows if v == "CAUTION"]
+    if blockers:
+        print(f"  裁决  × BLOCK —— {len(blockers)} 个包禁止导入")
+        for p in blockers[:10]:
+            print(f"        {p}")
+    elif cautions:
+        print(f"  裁决  ! CAUTION —— {len(cautions)} 个包需人工复核")
+    else:
+        print(f"  裁决  √ CLEAR —— 全部 {len(rows)} 个包未检出已知风险形态")
+    print()
+
+    top = [f for _, _, _, _, _, fs in rows for f in fs][:12]
+    if top:
+        print("  主要问题（跨包）：")
+        for f in top:
+            print(f"    {SEV_MARK[f.severity.value]} [{f.rule_id}] {f.title}")
+            print(f"        {f.path}:{f.line or '-'}")
+        print()
+
+    # ---- 证据包 --------------------------------------------------------
+    all_findings = [f for _, _, _, _, _, fs in rows for f in fs]
+    pack_verdict = {
+        "result": "BLOCK" if blockers else ("CAUTION" if cautions else "CLEAR"),
+        "blocking_packages": len(blockers),
+        "caution_packages": len(cautions),
+        "packages_audited": len(rows),
+        "trust_scores": {p: s for p, _, _, _, s, _ in rows},
+        "worst_score": min((s for *_, s, _ in rows), default=100),
+    }
+    if args.out:
+        outdir = Path(args.out)
+    else:
+        outdir = (target if target.is_dir() else target.parent) / ".agentledger"
+    outdir.mkdir(parents=True, exist_ok=True)
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    jpath = outdir / f"share-audit-{stamp}.json"
+    mpath = outdir / f"share-audit-{stamp}.md"
+    payload = {
+        "generated_at": stamp, "target": str(target), "mode": "batch" if len(rows) > 1 else "single",
+        "verdict": pack_verdict,
+        "packages": [
+            {"path": p, "verdict": v, "trust_score": s, "findings": [f.to_dict() for f in fs]}
+            for p, v, _, _, s, fs in rows
+        ],
+        "coverage": cov.summary(),
+    }
+    jpath.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    mpath.write_text(
+        f"# 分享包审计 {stamp}\n\n目标: {target}\n\n"
+        f"裁决: {pack_verdict['result']}\n\n"
+        + "\n".join(f"- {p}: {v}（信任分 {s}）" for p, v, _, _, s, _ in rows),
+        encoding="utf-8")
+
+    print(f"  证据包  {mpath}")
+    print(f"          {jpath}")
+    print()
+    if blockers:
+        return 1
+    if cautions and args.strict:
+        return 1
     return 0
 
 
@@ -269,6 +423,16 @@ def build_parser() -> argparse.ArgumentParser:
     k = sub.add_parser("init-key", help="生成签署密钥")
     k.add_argument("path", nargs="?", default="./.agentledger/attestation.key")
     k.set_defaults(func=cmd_init_key)
+
+    a = sub.add_parser(
+        "audit-share",
+        help="分享包/插件导入前审计：输出 BLOCK/CAUTION/CLEAR 裁决 + 证据包")
+    a.add_argument("path", help="分享包/插件目录或清单文件")
+    a.add_argument("-o", "--out", help="证据包输出目录（默认 <target>/.agentledger）")
+    a.add_argument("--strict", action="store_true",
+                   help="CAUTION 也以退出码 1 结束")
+    a.add_argument("--max-files", type=int, default=20000)
+    a.set_defaults(func=cmd_audit_share)
 
     g = sub.add_parser(
         "gbz185",

@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -417,6 +419,58 @@ class TestBundledCorpus(unittest.TestCase):
             "data/interop-corpus.json").read_text(encoding="utf-8")
         corpus = json.loads(text)
         self.assertEqual(len(corpus["cases"]), 7)
+
+
+class TestCliBomTolerance(unittest.TestCase):
+    """Windows 文本文件（记事本/PowerShell 默认）带 UTF-8 BOM。
+
+    修复前：`receipt issue --schema/--metadata` 与 `--jws @file` 在 BOM 文件上
+    直接 json.loads 崩溃。回归锁：BOM 与非 BOM 两条路径都必须可用。
+    """
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="aledger_bom_"))
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_bom_schema_and_jws_files_accepted(self):
+        import sys
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+        from agentledger.cli import main
+
+        key = self.tmp / "operator"
+        self.assertEqual(main(["receipt", "keygen", "--alg", "ES256",
+                               "--out", str(key)]), 0)
+
+        # utf-8-sig 写出的文件带 BOM —— Windows 默认行为
+        schema = self.tmp / "scope.json"
+        schema.write_text(json.dumps({"allowedActions": [
+            {"operation": "read", "resource": "reports/*"}]}),
+            encoding="utf-8-sig")
+        self.assertTrue(schema.read_bytes().startswith(b"\xef\xbb\xbf"),
+                        "fixture 必须真的带 BOM")
+
+        grant = self.tmp / "grant.json"
+        rc = main(["receipt", "issue", "--key", str(key),
+                   "--scope", "read:reports/*",
+                   "--boundaries", "no network egress",
+                   "--instructions", "file the weekly report",
+                   "--schema", str(schema),
+                   "--start", "2026-10-14T00:00:00Z",
+                   "--end", "2030-01-01T00:00:00Z",
+                   "--out", str(grant)])
+        self.assertEqual(rc, 0, "BOM schema 文件必须被接受")
+        self.assertTrue(grant.exists())
+
+        rc = main(["receipt", "verify", "--jws", f"@{grant}",
+                   "--action", "read::reports/q3.pdf",
+                   "--instructions", "file the weekly report"])
+        self.assertEqual(rc, 0, "合法动作必须 PERMIT（退出码 0）")
+
+        rc = main(["receipt", "verify", "--jws", f"@{grant}",
+                   "--action", "write::secrets/keys"])
+        self.assertEqual(rc, 1, "越权动作必须拒绝（退出码 1）")
 
 
 # ------------------------------------------------------------- helpers

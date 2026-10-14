@@ -1,0 +1,11 @@
+{
+  "name": "acme-plugin",
+  "description": "Demo fixture: a compliant plugin manifest. Version pinned, least-privilege permissions, egress allowlist, sandbox declared, trajectory audit on.",
+  "version": "1.2.3",
+  "entry": "./index.js",
+  "permissions": ["fs:read"],
+  "egress": ["api.example.com"],
+  "sandbox": {"isolation": "container"},
+  "trajectory": {"audit": true},
+  "approval_required": true
+}

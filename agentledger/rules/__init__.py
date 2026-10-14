@@ -8,7 +8,7 @@ from __future__ import annotations
 from typing import Callable, Iterator
 
 from ..model import Artifact, Coverage, Finding, Severity, Surface
-from . import deps, manifests, mcp, models, prompts
+from . import deps, harness, manifests, mcp, models, prompts, shares
 
 # (名称, 对制品执行的扫描器)
 ARTIFACT_RULES: list[tuple[str, Callable[[Artifact], Iterator[Finding]]]] = [
@@ -18,6 +18,8 @@ ARTIFACT_RULES: list[tuple[str, Callable[[Artifact], Iterator[Finding]]]] = [
     ("prompts", prompts.scan),
     ("deps", deps.scan),
     ("manifests", manifests.scan),
+    ("harness", harness.scan),
+    ("shares", shares.scan),
 ]
 
 # 依赖清单类规则：只对少数文件执行，放在最后以便前面已处理过
@@ -56,6 +58,18 @@ RULE_CATALOG: dict[str, tuple[str, str]] = {
     "AGT002": ("高风险动作缺少审批闸门", "financial-risk"),
     "AGT003": ("未声明执行隔离措施", "isolation"),
     "AGT004": ("项目缺少成文治理声明", "process"),
+    "HRN001": ("插件清单未声明权限范围", "least-privilege"),
+    "HRN002": ("插件版本未固定（运行时安装或浮动标签）", "supply-chain"),
+    "HRN003": ("插件可访问凭据但无审批闸门声明", "secret"),
+    "HRN004": ("插件具有网络能力但无出口白名单控制", "exfiltration"),
+    "HRN005": ("插件具备代码执行能力但未声明沙箱/隔离", "isolation"),
+    "HRN006": ("harness 运行时未声明轨迹/留痕能力", "audit-trail"),
+    "HRN007": ("IM 机器人权限档位为全员放行且无白名单", "access-control"),
+    "SHR001": ("分享包内含明文凭据", "secret"),
+    "SHR002": ("分享包技能/例程中存在注入指令", "prompt-injection"),
+    "SHR003": ("分享包含高风险自主动作但无审批闸门", "financial-risk"),
+    "SHR004": ("分享包缺少来源证明（发布者/签名/摘要）", "provenance"),
+    "SHR005": ("分享包索取共享计算机/会话访问但无隔离声明", "isolation"),
 }
 
 
