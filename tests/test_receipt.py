@@ -1,300 +1,457 @@
-"""收据（IETF DRP 对齐）测试。
+"""收据（IETF DRP draft -13）测试 —— v0.3.0 引擎全覆盖。
 
-覆盖：Ed25519 正确性（含 RFC 8032 官方测试向量）、规范序列化、
-签发/验证往返、草案 §6 拒绝码逐一触发、撤销表、子收据收窄规则、
-账本链完整性、以及"外层字段剥改"攻击。
+覆盖：指令规范化（对齐草案向量与语料库）、签发/验证往返、封闭字段集、
+时间窗、结构化作用域与约束、指令漂移、来源检查、一次性消费、
+子收据签发序列（§8.7 衰减/窗口包含在签名前强制）、链验证与深度上限、
+撤销记录/注册表/级联/离线失败关闭、字节级篡改防护。
+金标准与互操作语料库见 test_interop_corpus.py。
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
-import tempfile
 import unittest
-from datetime import timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from agentledger import ed25519  # noqa: E402
-from agentledger import receipt  # noqa: E402
-from agentledger.receipt import (  # noqa: E402
-    KeyPair, ReceiptLog, action, canonical_bytes, issue, utcnow, verify,
+from agentledger import drp, jws, p256  # noqa: E402
+from agentledger.drp import (  # noqa: E402
+    RevocationRegistry, instructions_hash, issue, issue_sub_receipt,
+    normalize_instructions, receipt_id, validate_body, verify_chain,
+    verify_receipt,
 )
 
-
-class TestEd25519(unittest.TestCase):
-    def test_rfc8032_vector_1_empty_message(self):
-        """RFC 8032 §7.1 测试向量 1：空消息。"""
-        seed = bytes.fromhex(
-            "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60")
-        pub_expected = bytes.fromhex(
-            "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a")
-        sig_expected = bytes.fromhex(
-            "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e06522490155"
-            "5fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b")
-        self.assertEqual(ed25519.public_key(seed), pub_expected)
-        self.assertEqual(ed25519.sign(seed, b""), sig_expected)
-        self.assertTrue(ed25519.verify(pub_expected, b"", sig_expected))
-
-    def test_roundtrip_and_tamper(self):
-        kp = KeyPair.generate()
-        msg = b"agentledger delegation receipt"
-        sig = kp.sign(msg)
-        self.assertTrue(ed25519.verify(kp.public, msg, sig))
-        self.assertFalse(ed25519.verify(kp.public, msg + b"x", sig))
-        bad = bytearray(sig)
-        bad[10] ^= 0x01
-        self.assertFalse(ed25519.verify(kp.public, msg, bytes(bad)))
-        other = KeyPair.generate()
-        self.assertFalse(ed25519.verify(other.public, msg, sig))
+FIXTURES = Path(__file__).resolve().parent / "fixtures"
+GOLDEN = json.loads((FIXTURES / "draft13-golden.json").read_text(
+    encoding="utf-8"))
+D = p256.b64u_to_int(GOLDEN["private_d"])
+NOW = "2026-10-09T12:30:00.000Z"
 
 
-class TestCanonical(unittest.TestCase):
-    def test_key_order_irrelevant(self):
-        self.assertEqual(canonical_bytes({"b": 1, "a": 2}),
-                         canonical_bytes({"a": 2, "b": 1}))
-
-    def test_nfc_normalization(self):
-        composed = "é"      # é
-        decomposed = "é"    # e + 组合重音
-        self.assertEqual(canonical_bytes({"x": composed}),
-                         canonical_bytes({"x": decomposed}))
-
-
-class ReceiptTestCase(unittest.TestCase):
-    """公共脚手架：临时目录 + 一把密钥 + 一份默认收据。"""
-
-    def setUp(self):
-        self._tmp = tempfile.TemporaryDirectory()
-        self.root = Path(self._tmp.name)
-        self.key = KeyPair.generate()
-        self.log = ReceiptLog.for_root(self.root)
-
-    def tearDown(self):
-        self._tmp.cleanup()
-
-    def make(self, **kw) -> dict:
-        kw.setdefault("allowed", ["read:reports/*", "write:notes/daily"])
-        kw.setdefault("key", self.key)
-        kw.setdefault("operator_instructions", "整理日报并归档")
-        r = issue(**kw)
-        self.log.append_receipt(r)
-        return r
+def base_body(**over):
+    body = {
+        "delegationId": "auth-1790000000000-a1b2c",
+        "issuedAt": "2026-10-09T12:00:00.000Z",
+        "scope": "read calendar events and draft meeting summaries",
+        "boundaries": "never send email without explicit confirmation",
+        "timeWindow": {"start": "2026-10-09T12:00:00.000Z",
+                       "end": "2026-10-09T13:00:00.000Z"},
+        "operatorInstructions": ("Read today's calendar events and draft "
+                                 "a summary for the 2pm standup."),
+        "signerPublicKey": p256.jwk_public(p256.pubkey_from_private(D)),
+    }
+    body["instructionsHash"] = instructions_hash(
+        body["operatorInstructions"])
+    body.update(over)
+    return body
 
 
-class TestIssueVerify(ReceiptTestCase):
-    def test_roundtrip_permit(self):
-        r = self.make()
-        self.assertRegex(r["receiptId"], r"^rec_[0-9a-f]{64}$")
-        res = verify(r, a="read:reports/q3.pdf",
-                     operator_instructions="整理日报并归档", log=self.log)
-        self.assertEqual(res["decision"], "PERMIT")
+SCHEMA = {
+    "version": "1.0",
+    "allowedActions": [
+        {"operation": "read", "resource": "calendar/events"},
+        {"operation": "write", "resource": "calendar/drafts",
+         "constraints": {"maxEvents": 10}},
+    ],
+    "deniedActions": [
+        {"operation": "delete", "resource": "calendar/events"},
+    ],
+}
 
-    def test_receipt_id_self_consistent(self):
-        r = self.make()
-        body_no_id = {k: v for k, v in r.items()
-                      if k not in ("receiptId", "canonicalPayload", "signature",
-                                   "orchestratorSignature")}
+
+class TestNormalization(unittest.TestCase):
+    def test_draft_vector(self):
+        """草案/语料库双命中向量（实证钉死的有损规范化）。"""
+        text = ("Read today's calendar events and draft a summary for the "
+                "2pm standup.")
         self.assertEqual(
-            "rec_" + receipt.sha256_hex(canonical_bytes(body_no_id)),
-            r["receiptId"])
+            instructions_hash(text),
+            "c730de758e586e19a81098fa1cd40721162da9817fa7f7e651524a27c93ee4fb")
 
-    def test_tampered_payload_invalid_signature(self):
-        """攻击者改写签名载荷（如偷偷加一条 delete 权限）→ 签名必失效。"""
-        r = self.make()
-        body = json.loads(receipt.unb64url(r["canonicalPayload"]))
-        body["scope"]["allowedActions"].append(
-            {"operation": "delete", "resource": "everything"})
-        r["canonicalPayload"] = receipt.b64url(receipt.canonical_bytes(body))
-        res = verify(r, log=self.log)
-        self.assertEqual(res["reason"], "INVALID_SIGNATURE")
-
-    def test_outer_field_stripping_caught(self):
-        """外层剥掉 revocationRequired / 篡改边界，验证必须仍然只信签名体。"""
-        r = self.make(revocation_required=True, boundaries=["deny:delete:*"])
-        r2 = dict(r)
-        r2.pop("revocationRequired")
-        r2["boundaries"] = []
-        # 外层被剥改 → 外层 receiptId 仍是签名体的，签名本身有效，
-        # 但所有检查读签名体：revocationRequired 仍在 → 无账本即硬拒
-        res = verify(r2, log=None)
-        self.assertEqual(res["reason"], "REVOCATION_CHECK_REQUIRED")
-
-    def test_time_window(self):
-        r = self.make(minutes=10)
-        past = utcnow() + timedelta(hours=2)
-        self.assertEqual(verify(r, log=self.log, now=past)["reason"],
-                         "RECEIPT_EXPIRED")
-        future = utcnow() - timedelta(hours=2)
-        self.assertEqual(verify(r, log=self.log, now=future)["reason"],
-                         "RECEIPT_NOT_YET_VALID")
-
-    def test_scope_default_deny(self):
-        r = self.make()
-        self.assertEqual(verify(r, a="read:secrets/*", log=self.log)["reason"],
-                         "ACTION_NOT_IN_SCOPE")
-        self.assertEqual(verify(r, a="exec:reports/q3.pdf", log=self.log)["reason"],
-                         "ACTION_NOT_IN_SCOPE")
-
-    def test_deny_list_precedence(self):
-        r = self.make(denied=["read:reports/private/*"])
-        res = verify(r, a="read:reports/private/salaries.pdf", log=self.log)
-        self.assertEqual(res["reason"], "ACTION_EXPLICITLY_DENIED")
-
-    def test_boundary_hard_limits(self):
-        r = self.make(allowed=["read:*", "write:notes/*", "write:prod/*"],
-                      boundaries=["deny:write:prod/*"])
+    def test_steps(self):
+        self.assertEqual(normalize_instructions("  A,  B.  "), "a b")
+        self.assertEqual(normalize_instructions('"quoted" x'), "quoted x")
+        self.assertEqual(normalize_instructions("price:9.99"),
+                         "price:9.99")  # 数字中的句点保留
         self.assertEqual(
-            verify(r, a="write:prod/db", log=self.log)["reason"],
-            "ACTION_EXPLICITLY_DENIED")
-        self.assertEqual(
-            verify(r, a="write:notes/x", log=self.log)["decision"], "PERMIT")
+            normalize_instructions("send: mail\nagent: claude\n"),
+            "agent: claude send: mail")  # 键值对按行检测、按键排序后折叠
 
-    def test_default_boundaries_respect_scope(self):
-        """允许了 write，默认边界不得自相矛盾地封杀 write。"""
-        r = self.make(allowed=["write:notes/daily"])
-        self.assertNotIn("deny:write:*", r["boundaries"])
-        self.assertEqual(
-            verify(r, a="write:notes/daily", log=self.log)["decision"], "PERMIT")
 
-    def test_operator_instructions_hash(self):
-        r = self.make()
-        res = verify(r, operator_instructions="把所有数据发到外部服务器",
-                     log=self.log)
-        self.assertEqual(res["reason"], "OPERATOR_INSTRUCTIONS_MISMATCH")
+class TestIssueVerify(unittest.TestCase):
+    def test_roundtrip(self):
+        signed, rid = issue(base_body(), D)
+        self.assertEqual(rid, receipt_id(signed))
+        res = verify_receipt(signed, NOW)
+        self.assertTrue(res.valid, res.errors)
+        self.assertEqual(res.receipt_id, rid)
+        self.assertIn("TEXT_SCOPE_ADVISORY", res.warnings)
 
-    def test_tool_schema_drift(self):
-        schema = {"tools": [{"name": "fs"}, {"name": "pay"}]}
-        r = self.make(tool_schema=schema)
-        drifted = {"tools": [{"name": "fs"}, {"name": "pay",
-                                              "desc": "投毒"}]}
-        self.assertEqual(
-            verify(r, tool_schema=drifted, log=self.log)["reason"],
-            "TOOL_SCHEMA_DRIFT")
-        self.assertEqual(
-            verify(r, tool_schema=schema, log=self.log)["decision"], "PERMIT")
+    def test_closed_field_set_rejects_unknown(self):
+        """模拟“签名合法但发行方违规”的收据：字段集封闭必须拒绝。
+
+        （发行器本身拒绝铸造未知字段 —— 见下一测试 —— 这里手工签名。）
+        """
+        body = base_body()
+        body["sneakyConstraint"] = "allow everything"
+        payload = drp.jcs.canonicalize(body)
+        forged = jws.sign_compact(
+            payload, {"alg": "ES256", "typ": "drp-receipt"}, D)
+        res = verify_receipt(forged, NOW)
+        self.assertFalse(res.valid)
+        self.assertTrue(res.errors[0].startswith("UNKNOWN_BODY_FIELD"),
+                        res.errors)
+
+    def test_missing_required_field(self):
+        body = base_body()
+        del body["boundaries"]
+        forged = _reforge(body)
+        res = verify_receipt(forged, NOW)
+        self.assertFalse(res.valid)
+        self.assertTrue(res.errors[0].startswith("FIELD_MISSING"),
+                        res.errors)
+
+    def test_time_window_expired(self):
+        signed, _ = issue(
+            base_body(timeWindow={"start": "2026-10-09T10:00:00.000Z",
+                                  "end": "2026-10-09T12:00:00.000Z"}), D)
+        res = verify_receipt(signed, NOW)
+        self.assertFalse(res.valid)
+        self.assertEqual(res.errors, ["TIME_WINDOW"])
+
+    def test_signature_covers_bytes(self):
+        signed, _ = issue(base_body(), D)
+        head, payload, sig = signed.split(".")
+        import base64
+        raw = json.loads(base64.urlsafe_b64decode(payload + "=="))
+        raw["boundaries"] = "none"
+        tampered = head + "." + jws_b64(raw) + "." + sig
+        res = verify_receipt(tampered, NOW)
+        self.assertFalse(res.valid)
+        self.assertIn("JWS_INVALID", res.errors[0])
+
+    def test_issuance_refuses_unknown_fields(self):
+        with self.assertRaises(ValueError):
+            issue(base_body(unknownTopLevel=1), D)
+
+
+class TestActionScope(unittest.TestCase):
+    def test_denied_first(self):
+        signed, _ = issue(base_body(scopeSchema=SCHEMA), D)
+        res = verify_receipt(signed, NOW, action={
+            "operation": "delete", "resource": "calendar/events"})
+        self.assertFalse(res.valid)
+        self.assertEqual(res.errors, ["SCOPE_ACTION_DENIED"])
+
+    def test_allowed_and_wildcard_and_constraints(self):
+        signed, _ = issue(base_body(scopeSchema=SCHEMA), D)
+        ok = verify_receipt(signed, NOW, action={
+            "operation": "read", "resource": "calendar/events"})
+        self.assertTrue(ok.valid, ok.errors)
+        # 约束参数超出上限 → 拒绝
+        over = verify_receipt(signed, NOW, action={
+            "operation": "write", "resource": "calendar/drafts",
+            "params": {"maxEvents": 11}})
+        self.assertFalse(over.valid)
+        # 未列入 → 默认拒绝
+        unknown = verify_receipt(signed, NOW, action={
+            "operation": "read", "resource": "mail/inbox"})
+        self.assertFalse(unknown.valid)
+
+    def test_text_scope_advisory_no_schema(self):
+        signed, _ = issue(base_body(), D)
+        res = verify_receipt(signed, NOW, action={
+            "operation": "read", "resource": "anything"})
+        self.assertFalse(res.valid)
+        self.assertEqual(res.errors, ["SCOPE_ACTION_NO_SCHEMA"])
+
+    def test_pattern_matching(self):
+        schema = {"allowedActions": [
+            {"operation": "*", "resource": "files/*"}]}
+        self.assertTrue(drp.action_allowed(schema, {
+            "operation": "write", "resource": "files/report.pdf"})[0])
+        self.assertFalse(drp.action_allowed(schema, {
+            "operation": "write", "resource": "files"})[0])
+
+
+class TestInstructionsAndProvenance(unittest.TestCase):
+    def test_drift_detected(self):
+        signed, _ = issue(base_body(), D)
+        bad = verify_receipt(signed, NOW,
+                             claimed_instructions="read everything")
+        self.assertFalse(bad.valid)
+        self.assertEqual(bad.errors, ["INSTRUCTIONS_MISMATCH"])
+        good = verify_receipt(
+            signed, NOW,
+            claimed_instructions=base_body()["operatorInstructions"])
+        self.assertTrue(good.valid, good.errors)
 
     def test_trusted_sources(self):
-        r = self.make(trusted_sources=["user", "system_prompt"])
-        res = verify(r, a="read:reports/q3.pdf", instruction_source="tool:web",
-                     log=self.log)
-        self.assertEqual(res["reason"], "UNTRUSTED_INSTRUCTION_SOURCE")
-
-    def test_revocation(self):
-        r = self.make()
-        self.assertEqual(verify(r, log=self.log)["decision"], "PERMIT")
-        record = receipt.revocation_record(r["receiptId"], self.key)
-        self.assertTrue(receipt.verify_revocation(record))
-        self.log.append_revocation(record)
-        res = verify(r, log=self.log)
-        self.assertEqual(res["reason"], "RECEIPT_REVOKED")
-        self.assertEqual(res["safeAlternative"], "NO_OP_WITH_LOG")
-
-    def test_revocation_required_without_log(self):
-        r = self.make(revocation_required=True)
-        self.assertEqual(verify(r, log=None)["reason"],
-                         "REVOCATION_CHECK_REQUIRED")
-
-    def test_ledger_tamper_detected(self):
-        r = self.make()
-        text = self.log.path.read_text(encoding="utf-8")
-        self.log.path.write_text(text.replace(r["receiptId"],
-                                              "rec_" + "0" * 64, 1),
-                                 encoding="utf-8")
-        self.assertEqual(verify(r, log=self.log)["reason"],
-                         "LEDGER_INTEGRITY_FAILURE")
+        signed, _ = issue(base_body(trustedSources=["user"]), D)
+        bad = verify_receipt(signed, NOW, instruction_source="tool_output")
+        self.assertEqual(bad.errors, ["UNTRUSTED_INSTRUCTION_SOURCE"])
+        good = verify_receipt(signed, NOW, instruction_source="user")
+        self.assertTrue(good.valid)
 
 
-class TestSubReceipts(ReceiptTestCase):
-    def make_child(self, parent, **kw) -> dict:
-        kw.setdefault("allowed", ["read:reports/q3.pdf"])
-        kw.setdefault("key", self.key)
-        kw.setdefault("minutes", 30)
-        kw.setdefault("operator_instructions", "仅读取季度报告")
-        c = issue(parent=parent, **kw)
-        self.log.append_receipt(c)
-        return c
+class TestOneTimeUse(unittest.TestCase):
+    def test_fail_closed_without_store(self):
+        signed, rid = issue(base_body(oneTimeUse=True), D)
+        res = verify_receipt(signed, NOW)
+        self.assertFalse(res.valid)
+        self.assertEqual(res.errors, ["CONSUMPTION_STORE_REQUIRED"])
 
-    def test_narrowed_child_permit(self):
-        p = self.make(minutes=60)
-        c = self.make_child(p)
-        res = verify(c, a="read:reports/q3.pdf", log=self.log)
-        self.assertEqual(res["decision"], "PERMIT")
-
-    def test_widened_child_denied(self):
-        p = self.make(minutes=60)
-        c = self.make_child(p, allowed=["read:secrets/*"])
-        self.assertEqual(verify(c, log=self.log)["reason"],
-                         "SCOPE_NOT_STRICT_SUBSET")
-
-    def test_equal_scope_child_denied(self):
-        p = self.make(minutes=60)
-        c = self.make_child(
-            p, allowed=[a["operation"] + ":" + a["resource"]
-                        for a in p["scope"]["allowedActions"]])
-        self.assertEqual(verify(c, log=self.log)["reason"],
-                         "SCOPE_NOT_STRICT_SUBSET")
-
-    def test_time_overflow_denied(self):
-        p = self.make(minutes=30)
-        c = self.make_child(p, minutes=120)
-        self.assertEqual(verify(c, log=self.log)["reason"],
-                         "PARENT_SCOPE_VIOLATION")
-
-    def test_parent_boundary_survives(self):
-        p = self.make(allowed=["read:*", "write:notes/*", "write:prod/*"],
-                      boundaries=["deny:write:prod/*"], minutes=60)
-        c = self.make_child(p, allowed=["write:prod/*"])
-        self.assertEqual(verify(c, log=self.log)["reason"],
-                         "PARENT_SCOPE_VIOLATION")
-
-    def test_chain_depth_limit(self):
-        """逐级收窄：reports/* → 2026/* → 单文件（草案 §10.2 收窄规则）。"""
-        p = self.make(minutes=240)
-        c1 = self.make_child(p, allowed=["read:reports/*"], minutes=180)
-        c2 = self.make_child(c1, allowed=["read:reports/2026/*"], minutes=120)
-        c3 = self.make_child(c2, allowed=["read:reports/2026/q3.pdf"],
-                             minutes=60)
-        self.assertEqual(verify(c3, a="read:reports/2026/q3.pdf",
-                                log=self.log)["decision"], "PERMIT")
-        c4 = self.make_child(c3, allowed=["read:reports/2026/q3.pdf"],
-                             minutes=30)
-        self.assertEqual(verify(c4, log=self.log)["reason"],
-                         "PARENT_SCOPE_VIOLATION")
-
-    def test_orchestrator_binding_tamper(self):
-        p = self.make(minutes=60)
-        c = self.make_child(p)
-        evil = KeyPair.generate()
-        binding = (f"orchestrator-delegation:{p['receiptId']}:"
-                   f"{c['receiptId']}").encode("utf-8")
-        c["orchestratorSignature"] = receipt.b64url(evil.sign(binding))
-        self.assertEqual(verify(c, log=self.log)["reason"],
-                         "PARENT_SCOPE_VIOLATION")
-
-    def test_missing_parent_denied(self):
-        p = self.make(minutes=60)
-        c = self.make_child(p)
-        self.log.path.unlink()  # 父收据所在账本消失
-        self.assertEqual(verify(c, log=self.log)["reason"],
-                         "PARENT_SCOPE_VIOLATION")
+    def test_consume_once(self):
+        signed, rid = issue(base_body(oneTimeUse=True), D)
+        store: set[str] = set()
+        first = verify_receipt(signed, NOW, consumed=store)
+        self.assertTrue(first.valid, first.errors)
+        store.add(rid)
+        second = verify_receipt(signed, NOW, consumed=store)
+        self.assertEqual(second.errors, ["RECEIPT_ALREADY_CONSUMED"])
 
 
-class TestActionLogging(ReceiptTestCase):
-    def test_denied_actions_are_logged(self):
-        """草案 §5.4：DENY 决策也必须留痕。"""
-        r = self.make()
-        self.log.append_action(r["receiptId"], action("read:secrets/x"), "DENY")
-        decisions = [e for e in self.log.entries()
-                     if e.kind == "action-decision"]
-        self.assertEqual(len(decisions), 1)
-        self.assertEqual(decisions[0].body["decision"], "DENY")
+class TestSubReceiptChain(unittest.TestCase):
+    def _root(self, **over):
+        body = base_body(scopeSchema=SCHEMA)
+        body["timeWindow"] = {"start": "2026-10-09T12:00:00.000Z",
+                              "end": "2026-10-09T13:00:00.000Z"}
+        body.update(over)
+        signed, rid = issue(body, D)
+        return signed, rid
 
-    def test_log_chain_verifies(self):
-        self.make()
-        ok, problems = self.log.verify()
-        self.assertTrue(ok, problems)
+    def _child(self, **over):
+        body = base_body(scopeSchema={
+            "allowedActions": [{"operation": "read",
+                                "resource": "calendar/events"}],
+            "deniedActions": [{"operation": "delete",
+                               "resource": "calendar/events"}],
+        })
+        body["timeWindow"] = {"start": "2026-10-09T12:15:00.000Z",
+                              "end": "2026-10-09T12:45:00.000Z"}
+        body.update(over)
+        return body
+
+    def test_issue_and_chain_verify(self):
+        parent, _ = self._root()
+        child, rid, orch = issue_sub_receipt(self._child(), D, parent)
+        res = verify_chain(
+            [{"compact": child, "orchestratorSignature": orch}],
+            NOW)
+        # 单独子收据链（缺 root）—— 需要 root-first 全链
+        parent_body = json.loads(_payload(parent))
+        full = verify_chain(
+            [parent, {"compact": child, "orchestratorSignature": orch}],
+            NOW)
+        self.assertTrue(full.valid, full.errors)
+        self.assertIn("CHAIN_OK", full.warnings)
+        self.assertIn("ORCHESTRATOR_SIG_OK", full.warnings)
+        del parent_body, res, rid
+
+    def test_wide_child_refused_at_issuance(self):
+        parent, _ = self._root()
+        wide = self._child(scopeSchema={
+            "allowedActions": [
+                {"operation": "read", "resource": "calendar/events"},
+                {"operation": "write", "resource": "calendar/drafts"},
+                {"operation": "delete", "resource": "calendar/events"},
+            ],
+            "deniedActions": [],
+        })
+        with self.assertRaises(ValueError):
+            issue_sub_receipt(wide, D, parent)
+
+    def test_child_window_must_be_contained(self):
+        parent, _ = self._root()
+        stray = self._child(timeWindow={
+            "start": "2026-10-09T11:00:00.000Z",
+            "end": "2026-10-09T12:45:00.000Z"})
+        with self.assertRaises(ValueError):
+            issue_sub_receipt(stray, D, parent)
+
+    def test_attenuation_violation_detected_at_verify(self):
+        """手动构造违规子收据（绕过签发检查，模拟恶意编排者）。"""
+        parent, parent_rid = self._root()
+        wide_body = self._child(scopeSchema={
+            "allowedActions": [
+                {"operation": "read", "resource": "calendar/events"},
+                {"operation": "delete", "resource": "calendar/events"},
+            ],
+            "deniedActions": [],
+        })
+        wide_body["parentReceiptId"] = parent_rid
+        child, rid = issue(wide_body, D)
+        orch = drp.jws.sign_compact(
+            ("orchestrator-delegation:%s:%s" % (parent_rid, rid)
+             ).encode(), {"alg": "ES256"}, D)
+        res = verify_chain(
+            [parent, {"compact": child, "orchestratorSignature": orch}],
+            NOW)
+        self.assertFalse(res.valid)
+        self.assertEqual(
+            res.errors,
+            ["CHAIN_HOP_1_SCOPE_ATTENUATION_VIOLATED"])
+
+    def test_depth_limit(self):
+        """默认 maxDepth=3：root + 两级委派（深度2）合法，深度3 拒绝。
+
+        逐级作用域严格收窄（5→3→2→1），窗口逐级内嵌，确保每一跳都能
+        通过 §8.5/窗口检查 —— 拒绝仅由深度上限触发。
+        """
+        actions = [
+            {"operation": "read", "resource": "calendar/events"},
+            {"operation": "write", "resource": "calendar/drafts"},
+            {"operation": "delete", "resource": "calendar/archive"},
+            {"operation": "read", "resource": "contacts/list"},
+            {"operation": "write", "resource": "notes/draft"},
+        ]
+        denied = [{"operation": "delete",
+                   "resource": "calendar/events"}]
+        windows = [
+            {"start": "2026-10-09T12:00:00.000Z",
+             "end": "2026-10-09T13:00:00.000Z"},
+            {"start": "2026-10-09T12:10:00.000Z",
+             "end": "2026-10-09T12:55:00.000Z"},
+            {"start": "2026-10-09T12:15:00.000Z",
+             "end": "2026-10-09T12:50:00.000Z"},
+            {"start": "2026-10-09T12:20:00.000Z",
+             "end": "2026-10-09T12:45:00.000Z"},
+        ]
+        widths = [5, 3, 2, 1]
+        compact: str | None = None
+        elements: list = []
+        for i, width in enumerate(widths):
+            body = base_body(
+                scopeSchema={"allowedActions": actions[:width],
+                             "deniedActions": denied},
+                timeWindow=windows[i])
+            if compact is None:
+                compact, _ = issue(body, D)
+                elements.append(compact)
+            else:
+                child, _, orch = issue_sub_receipt(body, D, compact)
+                compact = child
+                elements.append({"compact": child,
+                                 "orchestratorSignature": orch})
+        res = verify_chain(elements, NOW)
+        self.assertFalse(res.valid)
+        self.assertEqual(res.errors, ["CHAIN_DEPTH_EXCEEDED"])
+        # 深度2（root+2 跳）在默认上限内
+        ok = verify_chain(elements[:3], NOW)
+        self.assertTrue(ok.valid, ok.errors)
+
+    def test_wrong_orchestrator_key_fails(self):
+        """§4.4：绑定串必须用子收据 signerPublicKey 验证 —— 换钥即失效。"""
+        other_d = (D + 7) % p256.P256_N
+        parent, parent_rid = self._root()
+        child_body = self._child(
+            signerPublicKey=p256.jwk_public(
+                p256.pubkey_from_private(other_d)))
+        child, rid = issue({**child_body, "parentReceiptId": parent_rid},
+                           other_d)
+        # 绑定串由 D（非子密钥）签名 → 必须被拒
+        orch = drp.jws.sign_compact(
+            ("orchestrator-delegation:%s:%s" % (parent_rid, rid)
+             ).encode(), {"alg": "ES256"}, D)
+        res = verify_chain(
+            [parent, {"compact": child, "orchestratorSignature": orch}],
+            NOW)
+        self.assertFalse(res.valid)
+        self.assertIn("ORCHESTRATOR_SIG_INVALID", res.errors[0])
+
+
+class TestRevocation(unittest.TestCase):
+    def test_record_roundtrip(self):
+        signed, rid = issue(base_body(), D)
+        record = drp.issue_revocation_record(
+            rid, "key compromised", D)
+        self.assertTrue(drp.verify_revocation_record(record))
+        # 篡改记录 → 拷贝签名失效
+        tampered = dict(record)
+        tampered["reason"] = "nothing"
+        self.assertFalse(drp.verify_revocation_record(tampered))
+
+    def test_registry_and_revoked_receipt(self):
+        signed, rid = issue(base_body(), D)
+        registry = RevocationRegistry()
+        self.assertTrue(registry.revoke(rid, "misuse", D))
+        res = verify_receipt(signed, NOW, registry=registry)
+        self.assertFalse(res.valid)
+        self.assertEqual(res.errors, ["REVOKED"])
+        # 重复撤销必须失败（§9.1 永久性）
+        with self.assertRaises(ValueError):
+            registry.revoke(rid, "again", D)
+
+    def test_offline_fail_closed(self):
+        signed, _ = issue(base_body(revocationRequired=True), D)
+        res = verify_receipt(signed, NOW)
+        self.assertEqual(res.errors, ["REVOCATION_CHECK_REQUIRED"])
+        registry = RevocationRegistry()
+        ok = verify_receipt(signed, NOW, registry=registry)
+        self.assertTrue(ok.valid, ok.errors)
+
+    def test_ancestor_revoked_denies_child(self):
+        parent, rid = issue(base_body(scopeSchema=SCHEMA), D)
+        child, _, orch = issue_sub_receipt(_child_body(), D, parent)
+        registry = RevocationRegistry()
+        registry.revoke(rid, "parent misbehaved", D)
+        res = verify_chain(
+            [{"compact": parent},
+             {"compact": child, "orchestratorSignature": orch}],
+            NOW, registry=registry)
+        self.assertFalse(res.valid)
+        # 叶子先被注册表拒绝（REVOKE 命中自身?叶子未撤销——祖先走查）
+        self.assertTrue(
+            res.errors[0] in ("CHAIN_HOP_0_REVOKED",
+                              "ANCESTOR_REVOKED"),
+            res.errors)
+
+
+class TestBundledCorpus(unittest.TestCase):
+    def test_bundled_corpus_resource_present(self):
+        from importlib import resources
+        text = resources.files("agentledger").joinpath(
+            "data/interop-corpus.json").read_text(encoding="utf-8")
+        corpus = json.loads(text)
+        self.assertEqual(len(corpus["cases"]), 7)
+
+
+# ------------------------------------------------------------- helpers
+
+def _child_body(**over):
+    """子收据体：单动作收窄 + 内嵌时间窗。"""
+    body = base_body(scopeSchema={
+        "allowedActions": [{"operation": "read",
+                            "resource": "calendar/events"}],
+        "deniedActions": [{"operation": "delete",
+                           "resource": "calendar/events"}],
+    })
+    body["timeWindow"] = {"start": "2026-10-09T12:15:00.000Z",
+                          "end": "2026-10-09T12:45:00.000Z"}
+    body.update(over)
+    return body
+
+
+def jws_b64(obj) -> str:
+    import base64
+    raw = json.dumps(obj, separators=(",", ":"), ensure_ascii=False) \
+        .encode("utf-8")
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+
+
+def _payload(jws_text: str) -> str:
+    import base64
+    return base64.urlsafe_b64decode(jws_text.split(".")[1] + "==") \
+        .decode("utf-8")
+
+
+def _reforge(body: dict) -> str:
+    """用测试密钥重新签发（模拟“合法签名但字段违规”的发行方）。"""
+    signed, _ = issue(body, D)
+    return signed
 
 
 if __name__ == "__main__":
